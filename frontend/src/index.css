@@ -1,0 +1,63 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.7rem;
+  --background: #f4f6f8;
+  --foreground: #15243b;
+  --card: #ffffff;
+  --card-foreground: #15243b;
+  --popover: #ffffff;
+  --popover-foreground: #15243b;
+  --primary: #176b55;
+  --primary-foreground: #ffffff;
+  --secondary: #ecf1f4;
+  --secondary-foreground: #334155;
+  --muted: #f0f3f6;
+  --muted-foreground: #64748b;
+  --accent: #e8f4ee;
+  --accent-foreground: #176b55;
+  --destructive: #dc4550;
+  --border: #e3e8ee;
+  --input: #d7dfe7;
+  --ring: #176b55;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground antialiased; font-family: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  button, select { cursor: pointer; }
+  button:disabled { cursor: default; }
+}
+
+.dashboard-grid { background-image: radial-gradient(#c5d4cf 0.6px, transparent 0.6px); background-size: 16px 16px; }
+.stat-number { font-variant-numeric: tabular-nums; letter-spacing: -0.05em; }
+input[type="datetime-local"] { min-width: 0; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }

@@ -1,0 +1,14 @@
+# Suggested snippet only. This project never writes ~/.codex.
+[model_providers.am2oair]
+name = "AM2OAIR local relay"
+base_url = "http://127.0.0.1:8787/v1"
+wire_api = "responses"
+supports_websockets = false
+requires_openai_auth = false
+
+[profiles.am2oair]
+model_provider = "am2oair"
+model = "claude-opus-5-5"
+model_supports_reasoning_summaries = false
+model_reasoning_summary = "none"
+web_search = "disabled"
