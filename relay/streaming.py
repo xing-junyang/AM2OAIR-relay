@@ -83,7 +83,7 @@ class StreamTranslator:
         }
 
     def delta(self, state: dict, value: str, final: bool = False) -> list[dict]:
-        if state["item"]["type"] == "custom_tool_call":
+        if state["item"]["type"] == "custom_tool_call" or state["wrapped_arguments"]:
             # Anthropic streams JSON, while Responses custom tools stream raw
             # text. Decode only the complete wrapper, never emit JSON escapes or
             # an unfinished escape sequence as executable custom tool input.
@@ -149,6 +149,24 @@ class StreamTranslator:
                 self.event("response.custom_tool_call_input.done", **fields, input=item["input"])
             )
         else:
+            if state["wrapped_arguments"]:
+                try:
+                    envelope = json.loads(state["raw_arguments"])
+                except ValueError:
+                    raise UpstreamProtocolError("Invalid streamed function envelope") from None
+                if not isinstance(envelope, dict):
+                    raise UpstreamProtocolError("Function envelope must be an object")
+                original = self.registry.decode_function_arguments(state["upstream_name"], envelope)
+                item["arguments"] = json.dumps(
+                    scrub_credentials(original, self.secrets, redact_keys=True),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                events.append(
+                    self.event(
+                        "response.function_call_arguments.delta", **fields, delta=item["arguments"]
+                    )
+                )
             if not item["arguments"]:
                 events.extend(self.delta(state, "{}"))
             try:
@@ -224,6 +242,9 @@ class StreamTranslator:
                 "done": False,
                 "credential_filter": CredentialFilter(self.secrets),
                 "raw_arguments": "",
+                "wrapped_arguments": block_kind == "tool_use"
+                and self.registry.wraps_arguments(block["name"]),
+                "upstream_name": block.get("name"),
             }
             self.blocks[index] = state
             self.response["output"].append(item)

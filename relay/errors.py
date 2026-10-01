@@ -26,7 +26,7 @@ SENSITIVE_FIELDS = {
 }
 
 
-def scrub_credentials(value: Any, secrets: tuple[str, ...]) -> Any:
+def scrub_credentials(value: Any, secrets: tuple[str, ...], *, redact_keys: bool = False) -> Any:
     """Redact known credentials without removing normal response content."""
     if isinstance(value, str):
         for secret in secrets:
@@ -34,9 +34,14 @@ def scrub_credentials(value: Any, secrets: tuple[str, ...]) -> Any:
                 value = value.replace(secret, "[REDACTED]")
         return value
     if isinstance(value, list):
-        return [scrub_credentials(item, secrets) for item in value]
+        return [scrub_credentials(item, secrets, redact_keys=redact_keys) for item in value]
     if isinstance(value, dict):
-        return {key: scrub_credentials(item, secrets) for key, item in value.items()}
+        return {
+            scrub_credentials(key, secrets) if redact_keys else key: scrub_credentials(
+                item, secrets, redact_keys=redact_keys
+            )
+            for key, item in value.items()
+        }
     return value
 
 

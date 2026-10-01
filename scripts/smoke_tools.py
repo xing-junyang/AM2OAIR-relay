@@ -10,9 +10,22 @@ import sys
 from smoke_docker import fetch
 
 
+class SmokeCheckError(Exception):
+    """Fixed metadata-only assertion labels, safe for console output."""
+
+
+def check(condition, label):
+    if not condition:
+        raise SmokeCheckError(label)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=("function", "custom", "namespace"), default="function")
+    parser.add_argument(
+        "--kind",
+        choices=("function", "custom", "namespace", "oneOf", "allOf", "anyOf"),
+        default="function",
+    )
     kind = parser.parse_args().kind
     prompt = {
         "role": "user",
@@ -63,6 +76,28 @@ def main():
         prompt["content"] = (
             "Call smoke.echo with value OK. After receiving its result, reply with OK."
         )
+    elif kind in ("oneOf", "anyOf", "allOf"):
+        original = tools[0]["parameters"]
+        if kind == "allOf":
+            tools[0]["parameters"] = {
+                **original,
+                "allOf": [
+                    {"properties": {"value": {"minLength": 1}}},
+                    {"properties": {"value": {"const": "OK"}}},
+                ],
+            }
+        else:
+            tools[0]["parameters"] = {
+                kind: [
+                    original,
+                    {
+                        "type": "object",
+                        "properties": {"value": {"type": "integer"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                ]
+            }
     body, _ = fetch(
         "/v1/responses",
         {
@@ -76,13 +111,16 @@ def main():
     events = [
         json.loads(line[6:]) for line in body.decode().splitlines() if line.startswith("data: ")
     ]
-    assert [event["sequence_number"] for event in events] == list(range(len(events)))
-    assert events[-1]["type"] == "response.completed"
-    assert any(event["type"] == delta_type for event in events)
-    assert any(event["type"] == done_type for event in events)
+    check(
+        [event["sequence_number"] for event in events] == list(range(len(events))),
+        "SSE sequence numbers",
+    )
+    check(events and events[-1]["type"] == "response.completed", "SSE completion")
+    check(any(event["type"] == delta_type for event in events), "Tool argument delta")
+    check(any(event["type"] == done_type for event in events), "Tool argument done")
     first = events[-1]["response"]
     calls = [item for item in first["output"] if item["type"] == call_type]
-    assert calls and all(call["name"] == "echo" for call in calls)
+    check(calls and all(call["name"] == "echo" for call in calls), "Tool name roundtrip")
     history = [prompt, *first["output"]]
     for call in calls:
         if kind == "custom":
@@ -90,9 +128,9 @@ def main():
         else:
             arguments = json.loads(call["arguments"])
             value = arguments.get("value")
-        assert isinstance(value, str)
+        check(isinstance(value, str), "Original string argument roundtrip")
         if kind == "namespace":
-            assert call["namespace"] == "smoke"
+            check(call["namespace"] == "smoke", "Namespace roundtrip")
         history.append(
             {
                 "type": result_type,
@@ -107,11 +145,12 @@ def main():
             "tools": tools,
             "tool_choice": "none",
             "stream": False,
-            "max_output_tokens": 64,
+            "max_output_tokens": 512,
         },
     )
     final = json.loads(body)
-    assert final["status"] == "completed" and final["output_text"]
+    check(final["status"] == "completed", "Tool result response completion")
+    check(bool(final["output_text"]), "Tool result response text")
     print(
         json.dumps(
             {
@@ -130,7 +169,9 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
+        label = f": {exc}" if isinstance(exc, SmokeCheckError) else ""
         print(
-            f"Tool smoke failed ({type(exc).__name__}); no sensitive body printed", file=sys.stderr
+            f"Tool smoke failed ({type(exc).__name__}{label}); no sensitive body printed",
+            file=sys.stderr,
         )
         raise SystemExit(1) from None

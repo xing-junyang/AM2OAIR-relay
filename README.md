@@ -92,7 +92,7 @@ docker compose up -d --force-recreate
 | --- | --- |
 | `instructions`、字符串 input | 转换成 Anthropic system / user |
 | user / assistant / system / developer 消息 | 支持文本 content 数组；system/developer 合并到 system，相邻相同角色合并 |
-| function tools | 转换 name / description / parameters 为 input_schema；不承诺 strict schema 约束 |
+| function tools | 转换 name / description / parameters 为 input_schema；顶层 oneOf/allOf/anyOf 用对象封装保留原 schema，输出与历史自动解包/重包；不承诺 strict schema 约束 |
 | function_call 历史、function_call_output | 保留 call_id，与 tool_use / tool_result 双向映射；连续多个工具调用/结果合并 |
 | custom/freeform tools | 把原始字符串包装为 Anthropic `input_schema` 的 `input` 字段，再还原 `custom_tool_call`；支持 `custom_tool_call_output` 历史回传 |
 | namespace tools | 展开 function/custom 子工具，使用稳定且无冲突的上游名称；返回时还原 name 和 namespace，支持历史与指定工具选择 |
@@ -100,7 +100,7 @@ docker compose up -d --force-recreate
 | tool_choice | 转换 auto / required / none / 指定 function 或 custom（含 namespace）；目标模型的强制选择限制见下文 |
 | max_output_tokens、temperature、top_p | 转换；temperature/top_p 范围为 0–1 |
 | stream=false | Responses 对象，包括 output_text、function_call、custom_tool_call、usage、status |
-| stream=true | 文本与函数参数实时转换；custom 工具在一个上游 JSON 参数块完成后发出解码后的字符串；sequence_number 从 0 连续递增 |
+| stream=true | 文本与普通函数参数实时转换；custom 与顶层组合 schema 的工具在一个上游 JSON 参数块完成后发出解码/解包结果；sequence_number 从 0 连续递增 |
 | token 用量 | 输入包含 Anthropic 普通输入、缓存创建和缓存读取；cached_tokens 单列缓存读取 |
 | 正常结束 / 工具请求 | status=completed；工具执行由客户端负责 |
 | max_tokens 截断 | status=incomplete，reason=max_output_tokens；SSE 发 response.incomplete |
@@ -110,6 +110,8 @@ docker compose up -d --force-recreate
 SSE 文本事件：`response.created`、`response.in_progress`、`response.output_item.added`、`response.content_part.added`、`response.output_text.delta`、`response.output_text.done`、`response.content_part.done`、`response.output_item.done`、`response.completed`。函数额外使用 `response.function_call_arguments.delta` 与 `response.function_call_arguments.done`；custom 工具使用 `response.custom_tool_call_input.delta` 与 `response.custom_tool_call_input.done`，保留换行、引号和 Unicode 原文。失败使用 `error`、`response.failed`。
 
 Custom 的 Lark/regex grammar 会加入上游工具说明，但 Anthropic 接口没有等价的约束解码参数，因此不保证语法约束；最终输入校验和工具执行仍由客户端负责。工具定义、参数和结果仅存在于当前请求内存中，不进入数据库、管理 API 或默认服务日志。
+
+Anthropic 拒绝工具 `input_schema` 顶层的 `oneOf`、`allOf`、`anyOf`。中继将这类 schema 放入普通 object 的 `arguments` 属性中，不删除分支和约束；仅在与上游通信时使用封装，Codex 仍收到原始 function arguments。局部 JSON Pointer `$ref` 随嵌套位置调整，具有独立 `$id` 的资源及外部引用保留原作用域。原本就在属性内部的组合 schema 无需封装。组合 schema 中的 `$recursiveRef` 需要其所在资源有显式 `$id`，否则返回明确 400，避免改变递归引用语义。
 
 `reasoning`、`include`、`store`、`parallel_tool_calls`、`prompt_cache_key`、`text.verbosity`、`text.format` 和 metadata 等可选字段安全忽略；历史 reasoning item 及上游 thinking block 丢弃。`store=true` 也不会保存模型内容；parallel_tool_calls 不限制上游并行调用。
 
@@ -242,6 +244,10 @@ python3.12 scripts/smoke_tools.py
 # 分别验证 custom/freeform 和 namespace，均会再产生两次请求：
 python3.12 scripts/smoke_tools.py --kind custom
 python3.12 scripts/smoke_tools.py --kind namespace
+# 验证顶层组合 schema 的真实工具调用和历史回传，每种两次请求：
+python3.12 scripts/smoke_tools.py --kind oneOf
+python3.12 scripts/smoke_tools.py --kind allOf
+python3.12 scripts/smoke_tools.py --kind anyOf
 ```
 
 脚本验证 Dashboard HTML 和实际 JS/CSS、SPA 刷新、health/models/管理 API、真实 JSON 与 SSE 请求、数据库直接查询、用量统计、唯一暴露端口、容器 restart 与 force-recreate 后历史保留。会消耗少量上游 token，也会重启/重建本项目 relay 容器，保留 volume。

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import Settings
+from .schemas import ARGUMENTS_FIELD, SchemaAdaptationError, adapt_tool_schema
 
 
 class InvalidRequest(Exception):
@@ -34,6 +35,7 @@ class ToolSpec:
     namespace: str | None
     kind: str
     upstream_name: str
+    wrapped_arguments: bool = False
 
     def output_item(self, call_id: str, status: str = "in_progress") -> dict:
         custom = self.kind == "custom"
@@ -87,7 +89,9 @@ class ToolRegistry:
                 ):
                     self.resolve_history(item)
 
-    def register(self, name: str, namespace: str | None, kind: str) -> ToolSpec:
+    def register(
+        self, name: str, namespace: str | None, kind: str, wrapped_arguments: bool = False
+    ) -> ToolSpec:
         identity = (namespace, name)
         if identity in self.by_identity:
             existing = self.by_identity[identity]
@@ -108,7 +112,7 @@ class ToolRegistry:
             ]
             readable = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:32]
             alias = f"am2oair_{readable}_{digest}"
-        spec = ToolSpec(name, namespace, kind, alias)
+        spec = ToolSpec(name, namespace, kind, alias, wrapped_arguments)
         if alias in self.by_upstream:
             raise InvalidRequest("Conflicting tool names", "tools")
         self.by_identity[identity] = spec
@@ -125,8 +129,8 @@ class ToolRegistry:
         name = require_string(fn.get("name"), "tools.name")
         if (namespace, name) in self.by_identity:
             raise InvalidRequest("Duplicate tool definition", "tools")
-        spec = self.register(name, namespace, kind)
         descriptions = []
+        wrapped_arguments = False
         if namespace:
             descriptions.append(f"Tool {namespace}.{name}.")
             if isinstance(description, str):
@@ -159,6 +163,19 @@ class ToolRegistry:
             schema = fn.get("parameters") or {"type": "object", "properties": {}}
             if not isinstance(schema, dict):
                 raise InvalidRequest("Tool parameters must be a JSON Schema object", "tools")
+            try:
+                schema, wrapped_arguments = adapt_tool_schema(schema)
+            except SchemaAdaptationError as exc:
+                raise InvalidRequest(str(exc), "tools.parameters") from None
+            except RecursionError:
+                raise InvalidRequest(
+                    "Tool schema exceeds the nesting limit", "tools.parameters"
+                ) from None
+            if wrapped_arguments:
+                descriptions.append(
+                    "Place the complete original function argument object in the arguments field of the tool input. The relay removes this outer envelope before executing the function."
+                )
+        spec = self.register(name, namespace, kind, wrapped_arguments)
         target = {"name": spec.upstream_name, "input_schema": schema}
         if descriptions:
             target["description"] = "\n\n".join(descriptions)
@@ -192,6 +209,17 @@ class ToolRegistry:
                 raise UpstreamProtocolError("Upstream called an unknown tool")
             spec = ToolSpec(name, None, "function", name)
         return spec.output_item(call_id, status)
+
+    def wraps_arguments(self, name: str) -> bool:
+        spec = self.by_upstream.get(name)
+        return spec is not None and spec.wrapped_arguments
+
+    def decode_function_arguments(self, name: str, arguments: dict) -> dict:
+        if self.wraps_arguments(name):
+            arguments = arguments.get(ARGUMENTS_FIELD)
+        if not isinstance(arguments, dict):
+            raise UpstreamProtocolError("Function arguments must be a JSON object")
+        return arguments
 
 
 def custom_tool_input(arguments: dict) -> str:
@@ -241,10 +269,12 @@ def tool_result(item: dict) -> dict:
 
 def tool_use(item: dict, registry: ToolRegistry) -> dict:
     call_id = require_string(item.get("call_id") or item.get("id"), "call_id")
+    spec = None
     if item.get("type") == "tool_use":
         name = require_string(item.get("name"), "name")
     else:
-        name = registry.resolve_history(item).upstream_name
+        spec = registry.resolve_history(item)
+        name = spec.upstream_name
     if item.get("type") == "custom_tool_call":
         raw_input = item.get("input")
         if not isinstance(raw_input, str):
@@ -258,6 +288,8 @@ def tool_use(item: dict, registry: ToolRegistry) -> dict:
             raise InvalidRequest("Function arguments must be valid JSON", "arguments") from None
     if not isinstance(arguments, dict):
         raise InvalidRequest("Function arguments must be a JSON object", "arguments")
+    if spec is not None and spec.wrapped_arguments:
+        arguments = {ARGUMENTS_FIELD: arguments}
     return {"type": "tool_use", "id": call_id, "name": name, "input": arguments}
 
 
@@ -475,7 +507,9 @@ def to_openai(
                 item["input"] = custom_tool_input(block["input"])
             else:
                 item["arguments"] = json.dumps(
-                    block["input"], ensure_ascii=False, separators=(",", ":")
+                    registry.decode_function_arguments(block["name"], block["input"]),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
             response["output"].append(item)
         elif block.get("type") not in {"thinking", "redacted_thinking"}:
